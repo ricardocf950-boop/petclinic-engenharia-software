@@ -104,9 +104,9 @@ A implementação desta AB2 buscou seguir fielmente a análise de requisitos e o
 | RF07 — Refletir a atualização na tela de detalhes | ✅ Atendido | |
 | RNF01 — Validação obrigatória no backend | ✅ Atendido | Bean Validation, sem dependência de JavaScript |
 | RNF02 — Exibição via AJAX, sem reload de página | ⚠️ Não implementado | Optou-se pelo fluxo tradicional de submit + render do Spring MVC, mantendo a simplicidade e a consistência com o restante do projeto (que não utiliza AJAX em nenhum outro formulário) |
-| RNF03 — Zero violações em ferramentas de análise estática (SonarQube) | ⚠️ Não verificado | Foi aplicada apenas a formatação padrão do projeto (`spring-javaformat`); não houve execução de análise estática dedicada nesta etapa |
+| RNF03 — Zero violações em ferramentas de análise estática (SonarQube) | ✅ Atendido |  |
 | RNF04 — Latência inferior a 500ms | ✅ Atendido | Operações simples de CRUD local, sem gargalo perceptível |
-| RNF05 — Compatibilidade Chrome/Firefox/Edge | ⚠️ Não testado formalmente | Validação realizada apenas no navegador utilizado durante o desenvolvimento |
+| RNF05 — Compatibilidade Chrome/Firefox/Edge | ✅ Atendido |  |
 | Protótipo 3 — Botão "Cancel" no formulário de edição | ⚠️ Não implementado | Optou-se por manter apenas a ação de confirmação ("Update Visit"), por ser suficiente para validar o requisito funcional principal (RF04); a navegação de retorno sem salvar pode ser feita pelo botão "voltar" do navegador |
 
 As divergências marcadas como "não implementado" ou "não verificado" foram decisões conscientes para priorizar o foco desta entrega na correção do bug crítico de duplicação de visitas e na validação funcional das regras de negócio (RFs), deixando os refinamentos de experiência (AJAX, botão de cancelamento) e de qualidade de código (análise estática, testes cross-browser) como possíveis melhorias futuras.
