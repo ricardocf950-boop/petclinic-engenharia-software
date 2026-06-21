@@ -1,174 +1,181 @@
-# Spring PetClinic Sample Application [![Build Status](https://github.com/spring-projects/spring-petclinic/actions/workflows/maven-build.yml/badge.svg)](https://github.com/spring-projects/spring-petclinic/actions/workflows/maven-build.yml)[![Build Status](https://github.com/spring-projects/spring-petclinic/actions/workflows/gradle-build.yml/badge.svg)](https://github.com/spring-projects/spring-petclinic/actions/workflows/gradle-build.yml)
+# Spring PetClinic — Correção de Bug (AB2)
 
-[![Open in Gitpod](https://gitpod.io/button/open-in-gitpod.svg)](https://gitpod.io/#https://github.com/spring-projects/spring-petclinic) [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://github.com/codespaces/new?hide_repo_select=true&ref=main&repo=7517918)
+Este repositório contém o projeto **Spring PetClinic**, com a correção de um bug crítico encontrado no fluxo de **edição de visitas (Visits)**, identificado e resolvido como parte da entrega da AB2.
 
-## Understanding the Spring Petclinic application with a few diagrams
+## 📋 Sobre o projeto
 
-See the presentation here:  
-[Spring Petclinic Sample Application (legacy slides)](https://speakerdeck.com/michaelisvy/spring-petclinic-sample-application?slide=20)
+O Spring PetClinic é uma aplicação de demonstração da comunidade Spring, que simula o sistema de uma clínica veterinária: gerenciamento de donos (Owners), pets, tipos de pets, veterinários e visitas (Visits).
 
-> **Note:** These slides refer to a legacy, pre–Spring Boot version of Petclinic and may not reflect the current Spring Boot–based implementation.  
-> For up-to-date information, please refer to this repository and its documentation.
+## 📌 Issue #2337 — Validação de agendamento futuro de visitas
 
+Conforme especificado na AB1 (RF01, RF02, RF03, RNF01), o sistema deve impedir o registro de visitas com data anterior à data atual, exibindo uma mensagem de erro contextual ao usuário.
 
-## Run Petclinic locally
+Essa regra é garantida pela anotação `@FutureOrPresent` no campo `date` da entidade `Visit`:
 
-Spring Petclinic is a [Spring Boot](https://spring.io/guides/gs/spring-boot) application built using [Maven](https://spring.io/guides/gs/maven/) or [Gradle](https://spring.io/guides/gs/gradle/).
-Java 17 or later is required for the build, and the application can run with Java 17 or newer.
-
-You first need to clone the project locally:
-
-```bash
-git clone https://github.com/spring-projects/spring-petclinic.git
-cd spring-petclinic
-```
-If you are using Maven, you can start the application on the command-line as follows:
-
-```bash
-./mvnw spring-boot:run
-```
-With Gradle, the command is as follows:
-
-```bash
-./gradlew bootRun
+```java
+@FutureOrPresent(message = "The visit date must be today or a future date.")
+private LocalDate date;
 ```
 
-You can then access the Petclinic at <http://localhost:8080/>.
+Por ser validada via Bean Validation (`@Valid`) no lado do servidor, a regra é aplicada de forma consistente tanto na **criação** de uma nova visita quanto na **edição** de uma visita já existente — incluindo o cenário em que o usuário tenta alterar a data de uma visita já registrada para uma data passada.
 
-<img width="1042" alt="petclinic-screenshot" src="https://cloud.githubusercontent.com/assets/838318/19727082/2aee6d6c-9b8e-11e6-81fe-e889a5ddfded.png">
+A mensagem de erro é exibida diretamente abaixo do campo de data, através do fragmento `inputField.html`, sem a necessidade de recarregar a página manualmente (o formulário é reexibido pelo próprio Spring MVC com a mensagem de validação already populada).
 
-You can, of course, run Petclinic in your favorite IDE.
-See below for more details.
+## 🐛 Issue #2338 — Edição da descrição de visitas (bug de duplicação)
 
-## Building a Container
+### Sintoma
 
-There is no `Dockerfile` in this project. You can build a container image (if you have a docker daemon) using the Spring Boot build plugin:
+Ao usar a funcionalidade de **"edit description"** (editar a descrição de uma visita já existente), o sistema, ao invés de apenas atualizar o registro existente:
 
-```bash
-./mvnw spring-boot:build-image
+- Criava uma **nova visita duplicada** no banco de dados;
+- Atualizava a descrição da visita antiga **e** da nova, deixando duas linhas idênticas na lista de visitas do pet.
+
+### Causa raiz
+
+O problema estava no método anotado com `@ModelAttribute("visit")` dentro de `VisitController.java`. Esse tipo de método no Spring MVC é executado **antes de toda requisição** feita para qualquer rota do controller — tanto para as rotas de criação de visita quanto para as de edição.
+
+A implementação original criava uma nova instância de `Visit` e a adicionava à coleção de visitas do `Pet` **sempre que o método era executado**, mesmo durante o fluxo de edição:
+
+```java
+@ModelAttribute("visit")
+public Visit loadPetWithVisit(@PathVariable("ownerId") int ownerId, @PathVariable("petId") int petId,
+        Map<String, Object> model) {
+    // ...
+    Visit visit = new Visit();
+    pet.addVisit(visit); // <- Sempre executado, mesmo ao editar uma visita existente
+    return visit;
+}
 ```
 
-## In case you find a bug/suggested improvement for Spring Petclinic
+Como a entidade `Pet` mapeia sua coleção de visitas com `cascade = CascadeType.ALL`, ao salvar o `Owner`/`Pet`, o Hibernate persistia **toda a coleção em memória**, incluindo essa visita "fantasma" criada indevidamente — resultando na duplicação observada.
 
-Our issue tracker is available [here](https://github.com/spring-projects/spring-petclinic/issues).
+### Correção aplicada
 
-## Database configuration
+A lógica de criação de uma nova `Visit` foi isolada para acontecer **somente** no fluxo de criação de uma nova visita (rota `/visits/new`). O carregamento de `Owner` e `Pet`, usado por todas as rotas do controller, foi separado em um método `@ModelAttribute` próprio, que **não cria mais nenhuma visita**:
 
-In its default configuration, Petclinic uses an in-memory database (H2) which
-gets populated at startup with data. The h2 console is exposed at `http://localhost:8080/h2-console`,
-and it is possible to inspect the content of the database using the `jdbc:h2:mem:<uuid>` URL. The UUID is printed at startup to the console.
+```java
+@ModelAttribute
+public void loadOwnerAndPet(@PathVariable("ownerId") int ownerId, @PathVariable("petId") int petId,
+        Map<String, Object> model) {
+    // Carrega apenas owner e pet — não cria Visit nenhuma
+}
 
-A similar setup is provided for MySQL and PostgreSQL if a persistent database configuration is needed. Note that whenever the database type changes, the app needs to run with a different profile: `spring.profiles.active=mysql` for MySQL or `spring.profiles.active=postgres` for PostgreSQL. See the [Spring Boot documentation](https://docs.spring.io/spring-boot/how-to/properties-and-configuration.html#howto.properties-and-configuration.set-active-spring-profiles) for more detail on how to set the active profile.
-
-You can start MySQL or PostgreSQL locally with whatever installer works for your OS or use docker:
-
-```bash
-docker run -e MYSQL_USER=petclinic -e MYSQL_PASSWORD=petclinic -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=petclinic -p 3306:3306 mysql:9.6
+@GetMapping("/owners/{ownerId}/pets/{petId}/visits/new")
+public String initNewVisitForm(@ModelAttribute("pet") Pet pet, Map<String, Object> model) {
+    Visit visit = new Visit();
+    pet.addVisit(visit); // Só cria a visita nova aqui, quando de fato é uma criação
+    model.put("visit", visit);
+    return "pets/createOrUpdateVisitForm";
+}
 ```
 
-or
+Os fluxos de edição (`initEditVisitForm` e `processEditVisitForm`) passaram a apenas localizar a visita existente pelo seu ID dentro da coleção do pet, sem criar nenhum registro novo.
 
-```bash
-docker run -e POSTGRES_USER=petclinic -e POSTGRES_PASSWORD=petclinic -e POSTGRES_DB=petclinic -p 5432:5432 postgres:18.3
-```
+### Outras melhorias realizadas durante a correção
 
-Further documentation is provided for [MySQL](https://github.com/spring-projects/spring-petclinic/blob/main/src/main/resources/db/mysql/petclinic_db_setup_mysql.txt)
-and [PostgreSQL](https://github.com/spring-projects/spring-petclinic/blob/main/src/main/resources/db/postgres/petclinic_db_setup_postgres.txt).
+- **Criação do `VisitRepository`**, que estava ausente e impedia a compilação de uma versão anterior do controller que dependia dele.
+- **Implementação de `equals()` e `hashCode()` em `BaseEntity`**, baseados no `id`, seguindo a boa prática para entidades JPA mapeadas em coleções `Set` — evita inconsistências de identidade em coleções gerenciadas pelo Hibernate.
+- **Botão de formulário dinâmico**: o template `createOrUpdateVisitForm.html` agora exibe "Add Visit" ao criar uma nova visita e "Update Visit" ao editar uma existente, usando a expressão Thymeleaf `${visit['new']} ? #{addVisit} : #{updateVisit}`.
 
-Instead of vanilla `docker` you can also use the provided `docker-compose.yml` file to start the database containers. Each one has a service named after the Spring profile:
+## 🖼️ Evidências (antes e depois)
 
-```bash
-docker compose up mysql
-```
+### Antes da correção — duplicação ao editar a descrição
 
-or
+A visita era duplicada toda vez que a descrição era editada, e ambas as linhas recebiam o novo texto.
 
-```bash
-docker compose up postgres
-```
+### Depois da correção — edição funcionando corretamente
 
-## Test Applications
+Ao editar a descrição de uma visita existente, apenas o registro correspondente é atualizado, sem duplicação. O botão do formulário também passou a refletir corretamente o contexto da operação ("Update Visit").
 
-At development time we recommend you use the test applications set up as `main()` methods in `PetClinicIntegrationTests` (using the default H2 database and also adding Spring Boot Devtools), `MySqlTestApplication` and `PostgresIntegrationTests`. These are set up so that you can run the apps in your IDE to get fast feedback and also run the same classes as integration tests against the respective database. The MySql integration tests use Testcontainers to start the database in a Docker container, and the Postgres tests use Docker Compose to do the same thing.
+> As capturas de tela completas do processo de diagnóstico e da correção validada estão na pasta `docs/screenshots` deste repositório.
 
-## Compiling the CSS
+## 📐 Aderência ao documento da AB1
 
-There is a `petclinic.css` in `src/main/resources/static/resources/css`. It was generated from the `petclinic.scss` source, combined with the [Bootstrap](https://getbootstrap.com/) library. If you make changes to the `scss`, or upgrade Bootstrap, you will need to re-compile the CSS resources using the Maven profile "css", i.e. `./mvnw package -P css`. There is no build profile for Gradle to compile the CSS.
+A implementação desta AB2 buscou seguir fielmente a análise de requisitos e o projeto especificados no relatório da AB1 (Issues #2337 e #2338). A tabela abaixo resume o atendimento a cada requisito:
 
-## Working with Petclinic in your IDE
+| Requisito | Status | Observação |
+|---|---|---|
+| RF01 — Impedir agendamento com data retroativa | ✅ Atendido | Validado via `@FutureOrPresent` |
+| RF02 — Exibir mensagem de erro contextual | ✅ Atendido | Exibida no formulário, junto ao campo de data |
+| RF03 — Permitir datas presente/futura | ✅ Atendido | Comportamento padrão de `@FutureOrPresent` |
+| RF04 — Editar descrição de visita existente | ✅ Atendido | Corrigido o bug de duplicação |
+| RF05 — Formulário pré-preenchido na edição | ✅ Atendido | |
+| RF06 — Persistir a nova descrição | ✅ Atendido | |
+| RF07 — Refletir a atualização na tela de detalhes | ✅ Atendido | |
+| RNF01 — Validação obrigatória no backend | ✅ Atendido | Bean Validation, sem dependência de JavaScript |
+| RNF02 — Exibição via AJAX, sem reload de página | ⚠️ Não implementado | Optou-se pelo fluxo tradicional de submit + render do Spring MVC, mantendo a simplicidade e a consistência com o restante do projeto (que não utiliza AJAX em nenhum outro formulário) |
+| RNF03 — Zero violações em ferramentas de análise estática (SonarQube) | ⚠️ Não verificado | Foi aplicada apenas a formatação padrão do projeto (`spring-javaformat`); não houve execução de análise estática dedicada nesta etapa |
+| RNF04 — Latência inferior a 500ms | ✅ Atendido | Operações simples de CRUD local, sem gargalo perceptível |
+| RNF05 — Compatibilidade Chrome/Firefox/Edge | ⚠️ Não testado formalmente | Validação realizada apenas no navegador utilizado durante o desenvolvimento |
+| Protótipo 3 — Botão "Cancel" no formulário de edição | ⚠️ Não implementado | Optou-se por manter apenas a ação de confirmação ("Update Visit"), por ser suficiente para validar o requisito funcional principal (RF04); a navegação de retorno sem salvar pode ser feita pelo botão "voltar" do navegador |
 
-### Prerequisites
+As divergências marcadas como "não implementado" ou "não verificado" foram decisões conscientes para priorizar o foco desta entrega na correção do bug crítico de duplicação de visitas e na validação funcional das regras de negócio (RFs), deixando os refinamentos de experiência (AJAX, botão de cancelamento) e de qualidade de código (análise estática, testes cross-browser) como possíveis melhorias futuras.
 
-The following items should be installed in your system:
+## 🚀 Como executar o projeto
 
-- Java 17 or newer (full JDK, not a JRE)
-- [Git command line tool](https://help.github.com/articles/set-up-git)
-- Your preferred IDE
-  - Eclipse with the m2e plugin. Note: when m2e is available, there is a m2 icon in `Help -> About` dialog. If m2e is
-  not there, follow the installation process [here](https://www.eclipse.org/m2e/)
-  - [Spring Tools Suite](https://spring.io/tools) (STS)
-  - [IntelliJ IDEA](https://www.jetbrains.com/idea/)
-  - [VS Code](https://code.visualstudio.com)
+### Pré-requisitos
 
-### Steps
+- Java 17 ou superior
+- Maven (o projeto já inclui o Maven Wrapper, não é necessário instalar separadamente)
 
-1. On the command line run:
+### Passos
 
-    ```bash
-    git clone https://github.com/spring-projects/spring-petclinic.git
-    ```
+1. Clone o repositório:
+   ```bash
+   git clone https://github.com/ricardocf950-boop/petclinic-engenharia-software.git
+   cd petclinic-engenharia-software
+   ```
 
-1. Inside Eclipse or STS:
+2. Compile o projeto:
+   ```bash
+   # Linux/macOS
+   ./mvnw clean install -DskipTests
 
-    Open the project via `File -> Import -> Maven -> Existing Maven project`, then select the root directory of the cloned repo.
+   # Windows
+   mvnw.cmd clean install -DskipTests
+   ```
 
-    Then either build on the command line `./mvnw generate-resources` or use the Eclipse launcher (right-click on project and `Run As -> Maven install`) to generate the CSS. Run the application's main method by right-clicking on it and choosing `Run As -> Java Application`.
+3. Execute a aplicação:
+   ```bash
+   # Linux/macOS
+   ./mvnw spring-boot:run
 
-1. Inside IntelliJ IDEA:
+   # Windows
+   mvnw.cmd spring-boot:run
+   ```
 
-    In the main menu, choose `File -> Open` and select the Petclinic [pom.xml](pom.xml). Click on the `Open` button.
+4. Acesse a aplicação no navegador:
+   ```
+   http://localhost:8080
+   ```
 
-    - CSS files are generated from the Maven build. You can build them on the command line `./mvnw generate-resources` or right-click on the `spring-petclinic` project then `Maven -> Generates sources and Update Folders`.
+> O projeto utiliza o banco de dados **H2 em memória** por padrão — os dados são reiniciados automaticamente a cada execução da aplicação, com base nos dados de exemplo definidos em `src/main/resources/db/h2/data.sql`.
 
-    - A run configuration named `PetClinicApplication` should have been created for you if you're using a recent Ultimate version. Otherwise, run the application by right-clicking on the `PetClinicApplication` main class and choosing `Run 'PetClinicApplication'`.
+### Testando a correção do bug
 
-1. Navigate to the Petclinic
+1. Acesse um Owner e um dos seus Pets.
+2. Clique em **"Add Visit"** e cadastre uma nova visita.
+3. Na lista de visitas, clique em **"edit description"**.
+4. Altere a descrição e clique em **"Update Visit"**.
+5. Confirme que a visita foi atualizada corretamente, sem duplicação.
 
-    Visit [http://localhost:8080](http://localhost:8080) in your browser.
+### Testando a validação de data retroativa
 
-## Looking for something in particular?
+1. Repita os passos acima até abrir o formulário de edição (ou criação) de uma visita.
+2. Informe uma data anterior à data atual.
+3. Clique em **"Update Visit"** (ou **"Add Visit"**).
+4. Confirme que a mensagem *"The visit date must be today or a future date."* é exibida e que a visita não é salva.
 
-|Spring Boot Configuration | Class or Java property files  |
-|--------------------------|---|
-|The Main Class | [PetClinicApplication](https://github.com/spring-projects/spring-petclinic/blob/main/src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java) |
-|Properties Files | [application.properties](https://github.com/spring-projects/spring-petclinic/blob/main/src/main/resources) |
-|Caching | [CacheConfiguration](https://github.com/spring-projects/spring-petclinic/blob/main/src/main/java/org/springframework/samples/petclinic/system/CacheConfiguration.java) |
+## 🛠️ Tecnologias utilizadas
 
-## Interesting Spring Petclinic branches and forks
+- Java 17
+- Spring Boot
+- Spring MVC
+- Spring Data JPA / Hibernate
+- Thymeleaf
+- H2 Database
+- Maven
 
-The Spring Petclinic "main" branch in the [spring-projects](https://github.com/spring-projects/spring-petclinic)
-GitHub org is the "canonical" implementation based on Spring Boot and Thymeleaf. There are
-[quite a few forks](https://spring-petclinic.github.io/docs/forks.html) in the GitHub org
-[spring-petclinic](https://github.com/spring-petclinic). If you are interested in using a different technology stack to implement the Pet Clinic, please join the community there.
+## 👤 Autor
 
-## Interaction with other open-source projects
-
-One of the best parts about working on the Spring Petclinic application is that we have the opportunity to work in direct contact with many Open Source projects. We found bugs/suggested improvements on various topics such as Spring, Spring Data, Bean Validation and even Eclipse! In many cases, they've been fixed/implemented in just a few days.
-Here is a list of them:
-
-| Name | Issue |
-|------|-------|
-| Spring JDBC: simplify usage of NamedParameterJdbcTemplate | [SPR-10256](https://github.com/spring-projects/spring-framework/issues/14889) and [SPR-10257](https://github.com/spring-projects/spring-framework/issues/14890) |
-| Bean Validation / Hibernate Validator: simplify Maven dependencies and backward compatibility |[HV-790](https://hibernate.atlassian.net/browse/HV-790) and [HV-792](https://hibernate.atlassian.net/browse/HV-792) |
-| Spring Data: provide more flexibility when working with JPQL queries | [DATAJPA-292](https://github.com/spring-projects/spring-data-jpa/issues/704) |
-
-## Contributing
-
-The [issue tracker](https://github.com/spring-projects/spring-petclinic/issues) is the preferred channel for bug reports, feature requests and submitting pull requests.
-
-For pull requests, editor preferences are available in the [editor config](.editorconfig) for easy use in common text editors. Read more and download plugins at <https://editorconfig.org>. All commits must include a __Signed-off-by__ trailer at the end of each commit message to indicate that the contributor agrees to the Developer Certificate of Origin.
-For additional details, please refer to the blog post [Hello DCO, Goodbye CLA: Simplifying Contributions to Spring](https://spring.io/blog/2025/01/06/hello-dco-goodbye-cla-simplifying-contributions-to-spring).
-
-## License
-
-The Spring PetClinic sample application is released under version 2.0 of the [Apache License](https://www.apache.org/licenses/LICENSE-2.0).
+Ricardo Costa Filho — Disciplina de Engenharia de Software
