@@ -64,4 +64,5 @@ public class BaseEntity implements Serializable {
 	public int hashCode() {
 		return getClass().hashCode();
 	}
+
 }

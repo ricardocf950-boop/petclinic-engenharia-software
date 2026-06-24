@@ -54,8 +54,8 @@ class VisitController {
 	}
 
 	/**
-	 * Carrega o Owner e o Pet para o model, sem criar nenhuma Visit nova.
-	 * A criação da Visit nova fica isolada apenas no fluxo de "new visit".
+	 * Carrega o Owner e o Pet para o model, sem criar nenhuma Visit nova. A criação da
+	 * Visit nova fica isolada apenas no fluxo de "new visit".
 	 */
 	@ModelAttribute
 	public void loadOwnerAndPet(@PathVariable("ownerId") int ownerId, @PathVariable("petId") int petId,
